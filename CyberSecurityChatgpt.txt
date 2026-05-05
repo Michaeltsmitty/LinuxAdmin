@@ -1,0 +1,114 @@
+#!/bin/bash
+# Use the Bash shell to run this script
+
+# Michael Smith
+# Cybersecurity & System Audit Script
+# This script audits system security and also performs safe remediation
+if [ -f /etc/os-release ]; then . /etc/os-release; OS=$ID  # Load OS variables (like ID) and store OS name (ubuntu, centos, etc.)
+else OS="unknown"  # If file is missing, label OS as unknown
+fi
+
+echo "Cybersecurity Check"
+echo "Detected OS: $OS"
+echo
+
+echo "1. System Information:"
+hostname  # Displays the system's hostname to identify the machine
+uptime  # Shows how long the system has been running and current load
+echo
+
+echo "2. Logged-in Users:"
+who  # Lists all currently logged-in users with session details
+echo
+
+echo "3. Admin Users:"
+getent group sudo 2>/dev/null || getent group wheel  # Displays users with admin privileges (sudo for Ubuntu, wheel for CentOS)
+echo
+
+echo "4. SSH Security Settings:"
+grep -i "^PermitRootLogin" /etc/ssh/sshd_config || echo "PermitRootLogin not set"  
+# Checks if root login over SSH is allowed (security risk if enabled)
+
+grep -i "^PasswordAuthentication" /etc/ssh/sshd_config || echo "PasswordAuthentication not set"  
+# Checks if password-based SSH login is enabled (less secure than key-based authentication)
+echo
+
+SSH_PORT=$(grep -i "^Port" /etc/ssh/sshd_config | awk '{print $2}')  
+# Extracts the configured SSH port from sshd_config file
+
+if [ -z "$SSH_PORT" ]; then SSH_PORT=22; fi  
+# If no port is found, default to port 22 (standard SSH port)
+
+echo "Detected SSH Port: $SSH_PORT"
+echo
+
+echo "5. Firewall and Fail2Ban Check:"
+
+if [ "$OS" = "ubuntu" ]; then
+
+    if sudo ufw status | grep -q "inactive"; then
+        echo "Firewall inactive. Enabling..."
+        sudo ufw allow "$SSH_PORT"/tcp  # Allows SSH traffic on detected port to prevent lockout when firewall is enabled
+        sudo ufw default deny incoming  # Blocks all incoming connections by default to reduce attack surface
+        sudo ufw default allow outgoing  # Allows outgoing traffic so the system can still access external resources
+        sudo ufw --force enable  # Enables firewall without requiring user confirmation
+    else
+        echo "UFW already active."
+        sudo ufw status verbose  # Displays current firewall rules and status
+    fi
+
+    if ! command -v fail2ban-client >/dev/null 2>&1; then
+        echo "Installing Fail2Ban..."
+        sudo apt update -y  # Updates package list to ensure latest versions are available
+        sudo apt install -y fail2ban  # Installs Fail2Ban to protect against brute-force login attempts
+    else
+        echo "Fail2Ban already installed."
+    fi
+
+    sudo systemctl start fail2ban  # Starts Fail2Ban service to begin monitoring logs
+    sudo systemctl enable fail2ban  # Enables Fail2Ban to start automatically at boot
+
+elif [ "$OS" = "centos" ]; then
+
+    if ! systemctl is-active firewalld >/dev/null 2>&1; then
+        echo "Firewall inactive. Starting..."
+        sudo systemctl start firewalld  # Starts firewalld service for network protection
+        sudo systemctl enable firewalld  # Enables firewalld to run at startup
+        sudo firewall-cmd --permanent --add-port="$SSH_PORT"/tcp  # Opens SSH port permanently in firewall rules
+        sudo firewall-cmd --reload  # Reloads firewall to apply new rules
+    else
+        echo "firewalld already active."
+    fi
+
+    if ! command -v fail2ban-client >/dev/null 2>&1; then
+        echo "Installing Fail2Ban..."
+        sudo dnf install -y fail2ban || sudo yum install -y fail2ban  
+        # Installs Fail2Ban using available package manager (dnf or yum)
+    else
+        echo "Fail2Ban already installed."
+    fi
+
+    sudo systemctl start fail2ban  # Starts Fail2Ban service
+    sudo systemctl enable fail2ban  # Enables Fail2Ban at system startup
+
+else
+    echo "Unknown OS. Skipping firewall setup."
+fi
+
+echo
+
+echo "6. Open and Listening Ports:"
+ss -tulnp  # Displays all listening ports and associated processes to identify exposed services
+echo
+
+echo "7. Authentication Logs:"
+if [ "$OS" = "ubuntu" ]; then
+    sudo tail -10 /var/log/auth.log  # Shows recent authentication activity (logins, failures) on Ubuntu
+elif [ "$OS" = "centos" ]; then
+    sudo tail -10 /var/log/secure  # Shows recent authentication activity on CentOS
+else
+    echo "Unknown OS. Check logs manually."
+fi
+
+echo
+echo "Cybersecurity check complete."
